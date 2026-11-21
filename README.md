@@ -18,6 +18,18 @@
 
 照原 README 装进 `web`，桌面版不会生效。本脚本自动定位安装目录，按 `desktop` profile 完成安装与校验。
 
+## typert codec 兼容补丁
+
+上游插件 v0.2.0 在 DSH 0.2.2-rc.5 上会加载失败，诊断信息：
+
+```
+typert: dsh-personal-directive#personalDirective/getState result strict codec has no create() factory
+```
+
+原因是新版本 typert 校验 `strict` codec 时要求带 `create()` 工厂，运行时用 `codec.create().parse(value)` 解码，而上游只提供了 `schema`。缺失时插件 `apply` 抛错、effect 回滚，条目显示 `fiberPhase: "failed"`，提示词和顶部按钮都不会生效。
+
+脚本在安装/更新后自动给 `index.js` 和 `lib/client.js` 补上 `create()` 工厂，并断开 pnpm 硬链接后再写入，避免污染全局 store。
+
 ## 文件结构
 
 ```
@@ -83,5 +95,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dsh-dps.ps1 -Action 
 | --- | --- |
 | 找不到 DPS 安装目录 | `-DpsRoot "<DPS安装目录>"` 显式指定 |
 | `profile is managed exclusively by the Electron application` | 这是 `--dump-config` 的限制，不影响 `dsh plugin`，可忽略 |
-| 装完顶部没有按钮 | 完全退出重启（不是刷新页面），并确认装的是 `desktop` profile；用 `-Action status` 查 bundle 注册 |
+| 装完顶部没有按钮 | 完全退出重启（不是刷新页面），并确认装的是 `desktop` profile；用 `-Action status` 查 bundle 注册；再看插件条目是否 `fiberPhase: failed`（见上一节，重跑 `一键安装.bat` 会自动补 codec） |
 | PowerShell 报中文语法错 | `dsh-dps.ps1` 必须保存为 **UTF-8 with BOM**，PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 解析 |

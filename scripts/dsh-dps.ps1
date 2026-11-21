@@ -91,6 +91,43 @@ function Test-PackageInstalled {
     }
 }
 
+function Repair-TypertCodec {
+    # 0.2.2-rc.5 的 typert 要求 strict codec 带 create() 工厂，上游插件未提供，
+    # 缺失时 apply 抛错、effect 回滚，插件处于 fiberPhase: failed。
+    param([string]$ProfileDir)
+    $pluginDir = Join-Path $ProfileDir "node_modules\$PackageName"
+    if (-not (Test-Path $pluginDir)) { return 0 }
+
+    $pairs = @(
+        @{
+            File = (Join-Path $pluginDir 'index.js')
+            Old  = 'return { mode: "strict", typeSymbol, schema };'
+            New  = 'return { mode: "strict", typeSymbol, schema, create: () => schema };'
+        },
+        @{
+            File = (Join-Path $pluginDir 'lib\client.js')
+            Old  = '      schema: { parse: identity },'
+            New  = "      schema: { parse: identity },`n      create: () => ({ parse: identity }),"
+        }
+    )
+
+    $fixed = 0
+    foreach ($pair in $pairs) {
+        if (-not (Test-Path $pair.File)) { continue }
+        $text = [System.IO.File]::ReadAllText($pair.File, [System.Text.Encoding]::UTF8)
+        if ($text.Contains('create: () =>')) { continue }
+        if (-not $text.Contains($pair.Old)) { continue }
+        $text = $text.Replace($pair.Old, $pair.New)
+        $tmp = "$($pair.File).new"
+        [System.IO.File]::WriteAllText($tmp, $text, [System.Text.UTF8Encoding]::new($false))
+        # 先删再替换，断开 pnpm 硬链接，避免污染全局 store
+        Remove-Item $pair.File -Force
+        Move-Item $tmp $pair.File
+        $fixed++
+    }
+    return $fixed
+}
+
 function Invoke-Dsh {
     param([string]$DshCmd, [string[]]$DshArgs)
     & $DshCmd @DshArgs
@@ -153,6 +190,8 @@ switch ($Action) {
     }
     'install' {
         if (Test-PackageInstalled $profileDir) {
+            $patched = Repair-TypertCodec $profileDir
+            if ($patched -gt 0) { Write-Ok "已修正 typert codec 兼容问题（$patched 处），重启后生效。" }
             Write-Ok "插件已安装且配置完整（$PackageName），无需重复安装。"
             Show-Status $dshHome $profileDir $dshCmd $root
             exit 0
@@ -164,6 +203,8 @@ switch ($Action) {
         Invoke-Dsh $dshCmd @('plugin', '--profile', $Profile, 'add', $Source)
         if (Test-PackageInstalled $profileDir) {
             Write-Ok '安装完成，依赖与 bundle 均已写入。'
+            $patched = Repair-TypertCodec $profileDir
+            if ($patched -gt 0) { Write-Ok "已应用 typert codec 兼容补丁（$patched 处）。" }
         } else {
             Write-Warn '依赖已安装，但 profile 配置校验未通过，请检查 package.json。'
         }
@@ -173,6 +214,8 @@ switch ($Action) {
     'update' {
         Write-Step "更新插件: $PackageName"
         Invoke-Dsh $dshCmd @('plugin', '--profile', $Profile, 'update', $PackageName)
+        $patched = Repair-TypertCodec $profileDir
+        if ($patched -gt 0) { Write-Ok "更新后重新应用 typert codec 补丁（$patched 处）。" }
         Write-Ok '更新完成，重启桌面版后生效。'
         Show-Status $dshHome $profileDir $dshCmd $root
     }
