@@ -1,0 +1,12 @@
+# 安装时生成的配置备份（含 profile 路径等本机信息）
+backup/
+scripts/backup/
+
+# Windows / 编辑器杂项
+Thumbs.db
+desktop.ini
+.DS_Store
+*.tmp
+*.swp
+.vscode/
+.idea/
