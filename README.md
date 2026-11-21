@@ -85,12 +85,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dsh-dps.ps1 -Action 
 | `profile is managed exclusively by the Electron application` | 这是 `--dump-config` 的限制，不影响 `dsh plugin`，可忽略 |
 | 装完顶部没有按钮 | 完全退出重启（不是刷新页面），并确认装的是 `desktop` profile；用 `-Action status` 查 bundle 注册 |
 | PowerShell 报中文语法错 | `dsh-dps.ps1` 必须保存为 **UTF-8 with BOM**，PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 解析 |
-
-## 发布到 GitHub
-
-```bash
-git remote add origin https://github.com/<账号>/<仓库名>.git
-git push -u origin main
-```
-
-推送前确认 `git status` 干净、`scripts/backup/` 未被跟踪。本仓库 MIT 仅覆盖新增脚本，不重新许可上游插件与提示词。
