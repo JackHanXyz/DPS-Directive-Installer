@@ -91,38 +91,95 @@ function Test-PackageInstalled {
     }
 }
 
-function Repair-TypertCodec {
-    # 0.2.2-rc.5 的 typert 要求 strict codec 带 create() 工厂，上游插件未提供，
-    # 缺失时 apply 抛错、effect 回滚，插件处于 fiberPhase: failed。
+function Repair-PluginCompat {
+    # 上游插件是按更早的 DSH 写的，在 0.2.2-rc.5 上有两处不兼容：
+    #   1) typert 要求 strict codec 带 create() 工厂。缺失时 host 侧 apply 抛错、
+    #      effect 回滚，插件停在 fiberPhase: failed，提示词根本没注入。
+    #   2) client 侧图标导出名从 IconXxxOutline16 改成 IconXxxOutlineRegular。
+    #      解构到 undefined 后整个 slot 渲染抛 React #130，按钮不显示（host 侧却显示正常）。
     param([string]$ProfileDir)
     $pluginDir = Join-Path $ProfileDir "node_modules\$PackageName"
     if (-not (Test-Path $pluginDir)) { return 0 }
 
-    $pairs = @(
+    $iconImportOld = @'
+    const {
+      Button,
+      IconCheckOutline16,
+      IconCloseOutline16,
+      IconLoadingOutline16,
+    } = require("@deepseek-ai/dsh-client-ui-primitives");
+'@
+
+    $iconImportNew = @'
+    const primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+    const Button = primitives.Button;
+    const resolveIcon = (...names) => {
+      for (const name of names) {
+        const candidate = primitives[name];
+        if (candidate !== undefined && candidate !== null) return candidate;
+      }
+      return null;
+    };
+    const IconCheck = resolveIcon("IconCheckOutline16", "IconCheckOutlineRegular", "IconCheck16");
+    const IconClose = resolveIcon("IconCloseOutline16", "IconCloseOutlineRegular", "IconClose16");
+    const IconLoading = resolveIcon("IconLoadingOutline16", "IconLoadingOutlineRegular", "IconLoading16");
+'@
+
+    $iconUsageOld = @'
+      const icon = state.busy
+        ? h(IconLoadingOutline16, { size: 14 })
+        : state.enabled
+          ? h(IconCheckOutline16, { size: 14 })
+          : h(IconCloseOutline16, { size: 14 });
+'@
+
+    $iconUsageNew = @'
+      const iconGlyph = state.busy ? IconLoading : state.enabled ? IconCheck : IconClose;
+      const icon = iconGlyph ? h(iconGlyph, { size: 14 }) : undefined;
+'@
+
+    $patches = @(
         @{
-            File = (Join-Path $pluginDir 'index.js')
-            Old  = 'return { mode: "strict", typeSymbol, schema };'
-            New  = 'return { mode: "strict", typeSymbol, schema, create: () => schema };'
+            File   = 'index.js'
+            Marker = 'create: () => schema'
+            Old    = 'return { mode: "strict", typeSymbol, schema };'
+            New    = 'return { mode: "strict", typeSymbol, schema, create: () => schema };'
         },
         @{
-            File = (Join-Path $pluginDir 'lib\client.js')
-            Old  = '      schema: { parse: identity },'
-            New  = "      schema: { parse: identity },`n      create: () => ({ parse: identity }),"
+            File   = 'lib\client.js'
+            Marker = 'create: () =>'
+            Old    = '      schema: { parse: identity },'
+            New    = "      schema: { parse: identity },`n      create: () => ({ parse: identity }),"
+        },
+        @{
+            File   = 'lib\client.js'
+            Marker = 'resolveIcon'
+            Old    = $iconImportOld
+            New    = $iconImportNew
+        },
+        @{
+            File   = 'lib\client.js'
+            Marker = 'iconGlyph'
+            Old    = $iconUsageOld
+            New    = $iconUsageNew
         }
     )
 
     $fixed = 0
-    foreach ($pair in $pairs) {
-        if (-not (Test-Path $pair.File)) { continue }
-        $text = [System.IO.File]::ReadAllText($pair.File, [System.Text.Encoding]::UTF8)
-        if ($text.Contains('create: () =>')) { continue }
-        if (-not $text.Contains($pair.Old)) { continue }
-        $text = $text.Replace($pair.Old, $pair.New)
-        $tmp = "$($pair.File).new"
+    foreach ($patch in $patches) {
+        $file = Join-Path $pluginDir $patch.File
+        if (-not (Test-Path $file)) { continue }
+        $text = [System.IO.File]::ReadAllText($file, [System.Text.Encoding]::UTF8)
+        # 上游文件可能是 CRLF，多行匹配统一成 LF 再比对
+        $text = $text.Replace("`r`n", "`n")
+        if ($text.Contains($patch.Marker)) { continue }
+        if (-not $text.Contains($patch.Old)) { continue }
+        $text = $text.Replace($patch.Old, $patch.New)
+        $tmp = "$file.new"
         [System.IO.File]::WriteAllText($tmp, $text, [System.Text.UTF8Encoding]::new($false))
         # 先删再替换，断开 pnpm 硬链接，避免污染全局 store
-        Remove-Item $pair.File -Force
-        Move-Item $tmp $pair.File
+        Remove-Item $file -Force
+        Move-Item $tmp $file
         $fixed++
     }
     return $fixed
@@ -190,8 +247,8 @@ switch ($Action) {
     }
     'install' {
         if (Test-PackageInstalled $profileDir) {
-            $patched = Repair-TypertCodec $profileDir
-            if ($patched -gt 0) { Write-Ok "已修正 typert codec 兼容问题（$patched 处），重启后生效。" }
+            $patched = Repair-PluginCompat $profileDir
+            if ($patched -gt 0) { Write-Ok "已修正插件兼容问题（$patched 处），重启后生效。" }
             Write-Ok "插件已安装且配置完整（$PackageName），无需重复安装。"
             Show-Status $dshHome $profileDir $dshCmd $root
             exit 0
@@ -203,8 +260,8 @@ switch ($Action) {
         Invoke-Dsh $dshCmd @('plugin', '--profile', $Profile, 'add', $Source)
         if (Test-PackageInstalled $profileDir) {
             Write-Ok '安装完成，依赖与 bundle 均已写入。'
-            $patched = Repair-TypertCodec $profileDir
-            if ($patched -gt 0) { Write-Ok "已应用 typert codec 兼容补丁（$patched 处）。" }
+            $patched = Repair-PluginCompat $profileDir
+            if ($patched -gt 0) { Write-Ok "已应用插件兼容补丁（$patched 处）。" }
         } else {
             Write-Warn '依赖已安装，但 profile 配置校验未通过，请检查 package.json。'
         }
@@ -214,8 +271,8 @@ switch ($Action) {
     'update' {
         Write-Step "更新插件: $PackageName"
         Invoke-Dsh $dshCmd @('plugin', '--profile', $Profile, 'update', $PackageName)
-        $patched = Repair-TypertCodec $profileDir
-        if ($patched -gt 0) { Write-Ok "更新后重新应用 typert codec 补丁（$patched 处）。" }
+        $patched = Repair-PluginCompat $profileDir
+        if ($patched -gt 0) { Write-Ok "更新后重新应用插件兼容补丁（$patched 处）。" }
         Write-Ok '更新完成，重启桌面版后生效。'
         Show-Status $dshHome $profileDir $dshCmd $root
     }

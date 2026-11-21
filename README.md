@@ -18,17 +18,32 @@
 
 照原 README 装进 `web`，桌面版不会生效。本脚本自动定位安装目录，按 `desktop` profile 完成安装与校验。
 
-## typert codec 兼容补丁
+## 兼容补丁
 
-上游插件 v0.2.0 在 DSH 0.2.2-rc.5 上会加载失败，诊断信息：
+上游插件 v0.2.0 是按更早的 DSH 版本写的，在 0.2.2-rc.5 上有两处不兼容，脚本安装/更新后会自动修好。
+
+**一、typert codec 缺 `create()` 工厂**
+
+诊断信息：
 
 ```
 typert: dsh-personal-directive#personalDirective/getState result strict codec has no create() factory
 ```
 
-原因是新版本 typert 校验 `strict` codec 时要求带 `create()` 工厂，运行时用 `codec.create().parse(value)` 解码，而上游只提供了 `schema`。缺失时插件 `apply` 抛错、effect 回滚，条目显示 `fiberPhase: "failed"`，提示词和顶部按钮都不会生效。
+新版本 typert 校验 `strict` codec 时要求带 `create()` 工厂，运行时用 `codec.create().parse(value)` 解码，而上游只提供了 `schema`。缺失时 host 侧 `apply` 抛错、effect 回滚，条目显示 `fiberPhase: "failed"`，提示词和顶部按钮都不生效。脚本给 `index.js` 和 `lib/client.js` 补上工厂。
 
-脚本在安装/更新后自动给 `index.js` 和 `lib/client.js` 补上 `create()` 工厂，并断开 pnpm 硬链接后再写入，避免污染全局 store。
+**二、客户端图标导出名变了**
+
+这个坑更隐蔽：host 侧显示正常（`fiberPhase: "active"`），但界面顶部没有按钮，浏览器 console 里是：
+
+```
+Error: Minified React error #130
+slot entry crashed in 'conversation.session.header.actions': ...
+```
+
+`#130` 的意思是「渲染到了 undefined 组件」。rc.5 把图标导出从 `IconCheckOutline16` / `IconCloseOutline16` / `IconLoadingOutline16` 改成了 `...OutlineRegular`，而插件用解构导入，三个图标全是 `undefined`，整个 slot 渲染时崩掉。脚本改成按名字回退解析（新旧名字都试），后续版本再改名也不会碎。
+
+两处补丁都是先删文件再写入，断开 pnpm 硬链接，避免污染全局 store；重复执行是幂等的。
 
 ## 文件结构
 
@@ -95,5 +110,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dsh-dps.ps1 -Action 
 | --- | --- |
 | 找不到 DPS 安装目录 | `-DpsRoot "<DPS安装目录>"` 显式指定 |
 | `profile is managed exclusively by the Electron application` | 这是 `--dump-config` 的限制，不影响 `dsh plugin`，可忽略 |
-| 装完顶部没有按钮 | 完全退出重启（不是刷新页面），并确认装的是 `desktop` profile；用 `-Action status` 查 bundle 注册；再看插件条目是否 `fiberPhase: failed`（见上一节，重跑 `一键安装.bat` 会自动补 codec） |
+| 装完顶部没有按钮 | 完全退出重启（不是刷新页面），并确认装的是 `desktop` profile；用 `-Action status` 查 bundle 注册。若插件条目已是 `active` 但仍无按钮，是客户端图标兼容问题，重跑 `一键安装.bat` 会自动补（见上一节） |
+| 按钮出现但点不动 / 提示连接失败 | 插件 host 侧没起来，看 `-Action status` 里的 bundle 注册和插件条目状态 |
 | PowerShell 报中文语法错 | `dsh-dps.ps1` 必须保存为 **UTF-8 with BOM**，PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 解析 |
